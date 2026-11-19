@@ -1,0 +1,6 @@
+{
+  "name": "Resume Roaster",
+  "description": "Upload your resume, get roasted by AI with brutally honest feedback, and transform your career with actionable ATS scores and improvements.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
