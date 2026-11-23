@@ -11,8 +11,86 @@ import {
   Copy,
   Sparkles,
 } from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { SAMPLE_RESUMES, SampleResume } from '../utils/sampleResumes';
 import { apiRequest } from '../utils/apiClient';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+async function extractTextFromPdfInBrowser(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const loadingTask = pdfjsLib.getDocument({
+    data: new Uint8Array(arrayBuffer),
+  });
+
+  let pdf: pdfjsLib.PDFDocumentProxy;
+  try {
+    pdf = await loadingTask.promise;
+  } catch (err: any) {
+    if (err?.name === 'PasswordException') {
+      throw new Error(
+        'This PDF is password-protected. Please upload an unlocked text-based PDF or TXT file.'
+      );
+    }
+    throw new Error(
+      `Could not read PDF file (${err?.message || 'corrupted or invalid PDF'}).`
+    );
+  }
+
+  try {
+    const pages: string[] = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+
+      const lines: string[] = [];
+      let currentLine = '';
+
+      for (const item of textContent.items) {
+        if ('str' in item) {
+          currentLine += item.str;
+          if (item.hasEOL) {
+            if (currentLine.trim()) {
+              lines.push(currentLine.trim());
+            }
+            currentLine = '';
+          } else if (item.str && !item.str.endsWith(' ')) {
+            currentLine += ' ';
+          }
+        }
+      }
+
+      if (currentLine.trim()) {
+        lines.push(currentLine.trim());
+      }
+
+      const pageText = lines.join('\n').trim();
+      if (pageText) {
+        pages.push(pageText);
+      }
+    }
+
+    const fullText = pages
+      .join('\n\n')
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    if (!fullText || fullText.replace(/\s+/g, '').length < 15) {
+      throw new Error(
+        'This PDF is a scanned image, please upload a text-based PDF or TXT'
+      );
+    }
+
+    return fullText;
+  } finally {
+    await pdf.cleanup();
+    await loadingTask.destroy();
+  }
+}
 
 interface ResumeInputProps {
   resumeText: string;
@@ -64,7 +142,9 @@ export const ResumeInput: React.FC<ResumeInputProps> = ({
     setErrorMsg(null);
     const validExtensions = ['.pdf', '.docx', '.doc', '.txt', '.md'];
     const fileNameLower = file.name.toLowerCase();
-    const isValidExtension = validExtensions.some((ext) => fileNameLower.endsWith(ext));
+    const isValidExtension =
+      validExtensions.some((ext) => fileNameLower.endsWith(ext)) ||
+      file.type === 'application/pdf';
 
     if (!isValidExtension) {
       setErrorMsg('Unsupported file format. Please upload a PDF (.pdf), Word document (.docx), or plain text (.txt) file.');
@@ -91,7 +171,13 @@ export const ResumeInput: React.FC<ResumeInputProps> = ({
         return;
       }
 
-      // Read binary PDF / DOCX file as base64
+      if (fileNameLower.endsWith('.pdf') || file.type === 'application/pdf') {
+        const pdfText = await extractTextFromPdfInBrowser(file);
+        setResumeText(pdfText);
+        return;
+      }
+
+      // Read binary DOCX / DOC file as base64 and extract on server
       const reader = new FileReader();
       const base64Promise = new Promise<string>((resolve, reject) => {
         reader.onload = () => {
@@ -104,7 +190,7 @@ export const ResumeInput: React.FC<ResumeInputProps> = ({
       reader.readAsDataURL(file);
       const base64Data = await base64Promise;
 
-      // Call extraction endpoint
+      // Call extraction endpoint for DOCX
       const data = await apiRequest<{ text: string }>('/api/parse-resume', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -139,7 +225,9 @@ export const ResumeInput: React.FC<ResumeInputProps> = ({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0]);
+      const selectedFile = e.target.files[0];
+      e.target.value = '';
+      processFile(selectedFile);
     }
   };
 
